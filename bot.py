@@ -1,6 +1,8 @@
 import os
 import re
 import json
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
@@ -8,6 +10,19 @@ from google import genai
 from google.genai import types
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+
+# --- Mini servidor web para mantener activo Render Free Web Service ---
+class DummyServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot activo 24/7")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), DummyServer)
+    server.serve_forever()
 
 # 1. Variables de entorno seguras
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -101,6 +116,10 @@ async def registrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await mensaje_espera.edit_text(f"⚠️ Error al guardar: {e}")
 
 if __name__ == "__main__":
+    # Arrancar mini servidor web en segundo plano
+    threading.Thread(target=run_web_server, daemon=True).start()
+
+    # Arrancar Telegram Bot
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, registrar))
