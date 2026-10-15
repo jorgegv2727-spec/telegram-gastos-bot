@@ -71,7 +71,88 @@ def clasificar_con_ia(texto: str):
 
 # 4. Manejadores de Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Asistente contable 24/7 activo. Envíame tus gastos.")
+    mensaje = (
+        "🤖 *Asistente Contable 24/7 Activo*\n\n"
+        "Comandos disponibles:\n"
+        "• Escribe cualquier gasto en texto normal (ej: `Alcampo 15.40€`)\n"
+        "• `/resumen` : Resumen y desglose de gastos del mes actual\n"
+        "• `/ayuda` : Ver instrucciones de uso"
+    )
+    await update.message.reply_text(mensaje, parse_mode="Markdown")
+
+async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mensaje = (
+        "💡 *Cómo registrar gastos:*\n\n"
+        "Solo escribe o di el concepto y el monto:\n"
+        "• `Mercadona 23.50€`\n"
+        "• `Cena hamburguesa 14`\n"
+        "• `Metro billete 2.80`\n\n"
+        "Usa `/resumen` para ver el balance mensual acumulado."
+    )
+    await update.message.reply_text(mensaje, parse_mode="Markdown")
+
+async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_espera = await update.message.reply_text("📊 Calculando balance del mes...")
+    
+    try:
+        filas = worksheet.get_all_values()
+        if len(filas) <= 1:
+            await msg_espera.edit_text("ℹ️ Todavía no hay gastos registrados en la hoja.")
+            return
+
+        mes_actual = datetime.now().strftime("%Y-%m")
+        total_mes = 0.0
+        totales_por_categoria = {}
+        conteo_gastos = 0
+
+        # Asume estructura: [Fecha, Categoría, Detalle, Monto, Fuente]
+        for fila in filas[1:]:
+            if len(fila) >= 4:
+                fecha = fila[0].strip()
+                cat = fila[1].strip() or "Varios"
+                try:
+                    # Limpia el monto de posibles símbolos de euro o comas
+                    monto_str = fila[3].replace("€", "").replace(" ", "").replace(",", ".").strip()
+                    monto = float(monto_str)
+                except ValueError:
+                    continue
+
+                if fecha.startswith(mes_actual):
+                    conteo_gastos += 1
+                    total_mes += monto
+                    totales_por_categoria[cat] = totales_por_categoria.get(cat, 0.0) + monto
+
+        if conteo_gastos == 0:
+            await msg_espera.edit_text(f"ℹ️ No hay gastos anotados en lo que va de este mes ({mes_actual}).")
+            return
+
+        iconos_cat = {
+            "Alimentación": "🛒",
+            "Transporte": "🛴",
+            "Vivienda/Hogar": "🏠",
+            "Ocio/Compras": "🎮",
+            "Salud": "💊",
+            "Suministros": "💡",
+            "Varios": "📦"
+        }
+
+        nombre_mes = datetime.now().strftime("%B %Y").capitalize()
+        texto_resumen = f"📊 *Resumen de Gastos - {nombre_mes}*\n\n"
+        texto_resumen += f"💰 *Total acumulado:* `{total_mes:.2f} €` ({conteo_gastos} registros)\n\n"
+        texto_resumen += "*Desglose por categoría:*\n"
+
+        # Ordenar de mayor a menor gasto
+        categorias_ordenadas = sorted(totales_por_categoria.items(), key=lambda x: x[1], reverse=True)
+
+        for cat, subtotal in categorias_ordenadas:
+            pct = (subtotal / total_mes) * 100 if total_mes > 0 else 0
+            icono = iconos_cat.get(cat, "🔹")
+            texto_resumen += f"{icono} *{cat}:* {subtotal:.2f} € ({pct:.1f}%)\n"
+
+        await msg_espera.edit_text(texto_resumen, parse_mode="Markdown")
+
+    except Exception as e:
+        await msg_espera.edit_text(f"⚠️ Error al calcular resumen: {e}")
 
 async def registrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text
@@ -113,6 +194,8 @@ async def post_init(application):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ayuda", ayuda))
+    app.add_handler(CommandHandler("resumen", resumen))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, registrar))
 
     print("🚀 Bot iniciado y corriendo 24/7...")
