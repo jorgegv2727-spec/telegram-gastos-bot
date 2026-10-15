@@ -1,49 +1,34 @@
 import os
 import re
 import json
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
-import gspread
-from google.oauth2.service_account import Credentials
+from aiohttp import web
 from google import genai
 from google.genai import types
+import gspread
+from google.oauth2.service_account import Credentials
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- Mini servidor web para mantener activo Render Free Web Service ---
-class DummyServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Bot activo 24/7")
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), DummyServer)
-    server.serve_forever()
-
-# 1. Variables de entorno seguras
+# 1. Variables de entorno
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+PORT = int(os.environ.get("PORT", 8080))
 
 # 2. Conexión con Google Sheets
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-
 creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-gc = gspread.authorize(creds)
-
+credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+gc = gspread.authorize(credentials)
 sh = gc.open("Control de Gastos")
 worksheet = sh.sheet1
 print(f"✅ Conectado a la hoja: '{sh.title}'")
 
-# 3. Configuración de Gemini AI
+# 3. Configuración Gemini AI
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 def extraer_monto_fallback(texto: str) -> float:
@@ -58,7 +43,6 @@ def extraer_monto_fallback(texto: str) -> float:
 
 def clasificar_con_ia(texto: str):
     monto_respaldo = extraer_monto_fallback(texto)
-
     prompt = f"""
     Eres un asistente contable para gastos personales en España.
     Analiza este texto: "{texto}"
@@ -70,26 +54,22 @@ def clasificar_con_ia(texto: str):
       "concepto": "resumen corto del gasto (máximo 3 palabras)"
     }}
     """
-
     try:
         response = ai_client.models.generate_content(
-            model="gemini-3.8-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
+            config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         datos = json.loads(response.text)
         monto = float(datos.get("monto", monto_respaldo))
         if monto == 0.0 and monto_respaldo > 0.0:
             monto = monto_respaldo
-            
         return monto, datos.get("categoria", "Varios"), datos.get("concepto", texto)
     except Exception as e:
         print(f"⚠️ Error IA: {e}")
         return monto_respaldo, "Varios", texto
 
-# 4. Bot de Telegram
+# 4. Manejadores de Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Asistente contable 24/7 activo. Envíame tus gastos.")
 
@@ -103,7 +83,6 @@ async def registrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         nueva_fila = [fecha_hoy, categoria, concepto, monto, "Gemini AI"]
         worksheet.append_row(nueva_fila)
-        
         await mensaje_espera.edit_text(
             f"✅ *Gasto Registrado (24/7)*\n\n"
             f"📅 Fecha: {fecha_hoy}\n"
@@ -115,12 +94,24 @@ async def registrar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await mensaje_espera.edit_text(f"⚠️ Error al guardar: {e}")
 
-if __name__ == "__main__":
-    # Arrancar mini servidor web en segundo plano
-    threading.Thread(target=run_web_server, daemon=True).start()
+# 5. Servidor HTTP de soporte para Render (Health Check)
+async def health_check(request):
+    return web.Response(text="Bot 24/7 OK", status=200)
 
-    # Arrancar Telegram Bot
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"🌐 Servidor Web activo en puerto {PORT}")
+
+async def post_init(application):
+    await start_web_server()
+
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, registrar))
 
